@@ -1,0 +1,107 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+#
+# A Simple BitTorrent "bencode" Decoder
+# by Fredrik Lundh http://effbot.org/zone/bencode.htm
+#
+# Adapted to scripts and ported to Python 3.*
+# by Sergey V. Sarbash <sarbash.s@gmail.com>
+#
+# Last edit: 2022-06-21 11:00 MSK
+
+import sys
+from os.path import basename
+import re
+
+def tokenize(text, match=re.compile(rb'([idel])|(\d+):|(-?\d+)').match):
+    i = 0
+    while i < len(text):
+        m = match(text, i)
+        s = m.group(m.lastindex)
+        i = m.end()
+        if m.lastindex == 2:
+            yield b"s"
+            yield text[i:i+int(s)]
+            i = i + int(s)
+        else:
+            yield s
+
+def decode_item(src, token):
+    if token == b"i":
+        # integer: "i" value "e"
+        data = int(next(src))
+        if next(src) != b"e":
+            raise ValueError
+    elif token == b"s":
+        # string: "s" value (virtual tokens)
+        data = decode_str(next(src))
+    elif token == b"l" or token == b"d":
+        # container: "l" (or "d") values "e"
+        data = []
+        tok = next(src)
+        while tok != b"e":
+            data.append(decode_item(src, tok))
+            tok = next(src)
+        if token == b"d":
+            data = dict(zip(data[0::2], data[1::2]))
+    else:
+        raise ValueError
+    return data
+
+def decode(text):
+    try:
+        src = tokenize(text)
+        data = decode_item(src, next(src))
+        for token in src: # look for more tokens
+            raise SyntaxError("trailing junk")
+    except (AttributeError, ValueError, StopIteration):
+        raise SyntaxError("syntax error")
+    return data
+
+def decode_str(s):
+    encodings = ('utf8', 'cp1251', 'cp866', 'iso8859_5', 'ascii')
+    for encoding in encodings:
+        try:
+            return s.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return s.decode(sys.getdefaultencoding(), 'ignore')
+
+def human_readable(size, factor=1024.0):
+    if size == 0:
+        size = +0
+    SUFFIXES = ["bytes"] + [i + {1000.0: "B", 1024.0: "iB"}[factor] for i in "KMGTPEZY"]
+    for suffix in SUFFIXES:
+        if size < factor or suffix == SUFFIXES[-1]:
+            if suffix == SUFFIXES[0]:
+                return "%d %s" % (size, suffix)
+            else:
+                return "%.1f %s" % (size, suffix)
+        else:
+            size /= factor
+
+
+# :: Main block ::
+
+if len(sys.argv) != 2:
+    print('\nA Simple BitTorrent "bencode" Decoder'
+           '\nby Fredrik Lundh http://effbot.org/zone/bencode.htm\n'
+           '\nAdapted to scripts and ported to Python 3.*'
+           '\nby Sergey V. Sarbash <sarbash.s@gmail.com>\n'
+           '\nUsage: %s filename.torrent\n' % basename(sys.argv[0]))
+    exit(1)
+
+data = open(sys.argv[1], "rb").read()
+torrent = decode(data)
+
+print("Name:     %s" % torrent["info"]["name"])
+if "length" in torrent["info"]:
+    print("Length:   %s" % human_readable(torrent["info"]["length"]))
+if "announce" in torrent:
+    print("Announce: %s" % torrent["announce"])
+if 'comment' in torrent:
+    print("Comment:  %s" % torrent["comment"])
+if "files" in torrent["info"]:
+    print("Files:")
+    for file in torrent["info"]["files"]:
+        print("          %s - %s" % ("/".join(file["path"]), human_readable(file["length"])))
